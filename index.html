@@ -94,6 +94,15 @@
             background: #f59f00;
         }
 
+        .last-backup {
+            text-align: center;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.6);
+            margin-top: 10px;
+            margin-bottom: 20px;
+            font-style: italic;
+        }
+
         .display-card {
             background: rgba(255, 255, 255, 0.1);
             backdrop-filter: blur(10px);
@@ -191,6 +200,8 @@
         <button id="resetBtn" class="btn-reset" disabled>Reset Total</button>
     </div>
 
+    <div id="lastBackup" class="last-backup">Last backup: Never</div>
+
     <div class="info">
         <strong>📱 How to use:</strong><br>
         1. Make sure your ESP32 is powered on<br>
@@ -220,6 +231,7 @@
         const connectBtn = document.getElementById('connectBtn');
         const disconnectBtn = document.getElementById('disconnectBtn');
         const resetBtn = document.getElementById('resetBtn');
+        const lastBackupEl = document.getElementById('lastBackup');
 
         // Update status display
         function updateStatus(status, className) {
@@ -227,7 +239,7 @@
             statusEl.className = 'status ' + className;
         }
 
-        // Parse incoming data (format: "GPH:12.34,TOTAL:5.67")
+        // Parse incoming data (format: "GPH:12.34,TOTAL:5.67,LASTSAVE:120")
         function parseData(dataString) {
             try {
                 const parts = dataString.split(',');
@@ -239,9 +251,39 @@
                 
                 flowRateEl.textContent = gph.toFixed(2);
                 totalFuelEl.textContent = total.toFixed(2);
+                
+                // Parse and display last backup time if available
+                if (parts.length >= 3) {
+                    const lastSavePart = parts[2].split(':');
+                    const secondsSinceLastSave = parseInt(lastSavePart[1]);
+                    updateLastBackupDisplay(secondsSinceLastSave);
+                }
             } catch (error) {
                 console.error('Error parsing data:', error);
             }
+        }
+
+        // Format and display last backup time
+        function updateLastBackupDisplay(seconds) {
+            let displayText = "Last backup: ";
+            
+            if (seconds < 60) {
+                displayText += seconds + " seconds ago";
+            } else if (seconds < 3600) {
+                const minutes = Math.floor(seconds / 60);
+                displayText += minutes + (minutes === 1 ? " minute ago" : " minutes ago");
+            } else {
+                const hours = Math.floor(seconds / 3600);
+                const minutes = Math.floor((seconds % 3600) / 60);
+                displayText += hours + (hours === 1 ? " hour" : " hours");
+                if (minutes > 0) {
+                    displayText += ", " + minutes + (minutes === 1 ? " min ago" : " mins ago");
+                } else {
+                    displayText += " ago";
+                }
+            }
+            
+            lastBackupEl.textContent = displayText;
         }
 
         // Handle characteristic value changes
@@ -313,14 +355,28 @@
             disconnectBtn.disabled = true;
             resetBtn.disabled = true;
             characteristic = null;
+            lastBackupEl.textContent = 'Last backup: Unknown';
         }
 
         // Reset total consumption
-        function resetTotal() {
+        async function resetTotal() {
             if (confirm('Reset total fuel consumption to zero?')) {
-                totalFuelEl.textContent = '0.00';
-                // Optionally send reset command to ESP32
-                // (would need to implement on ESP32 side)
+                // Send reset command to ESP32
+                if (characteristic) {
+                    try {
+                        const encoder = new TextEncoder();
+                        await characteristic.writeValue(encoder.encode('RESET'));
+                        totalFuelEl.textContent = '0.00';
+                        lastBackupEl.textContent = 'Last backup: Just now';
+                        console.log('Reset command sent to ESP32');
+                    } catch (error) {
+                        console.error('Error sending reset command:', error);
+                        // Still reset display even if command fails
+                        totalFuelEl.textContent = '0.00';
+                    }
+                } else {
+                    totalFuelEl.textContent = '0.00';
+                }
             }
         }
 
