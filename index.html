@@ -1,150 +1,343 @@
-/*
- * ESP32 Fuel Flow Monitor for Outboard Motor
- * Sensor: GREDIA 3/8" Flow Sensor (B086W721V1)
- * Formula: F = 2.5 × Q (pulses per liter)
- * Bluetooth Low Energy (BLE) enabled for Android tablet
- */
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>⛽ Fuel Flow Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: white;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            -webkit-user-select: none;
+            user-select: none;
+        }
 
-// Pin Definitions
-#define FLOW_SENSOR_PIN 4  // GPIO pin connected to flow sensor signal (yellow wire)
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
 
-// BLE UUIDs
-#define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
 
-// Flow Sensor Constants
-#define PULSES_PER_LITER 2.5  // From sensor spec: F = 2.5 × Q
-#define LITERS_TO_GALLONS 0.264172
+        .status {
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            display: inline-block;
+            transition: all 0.3s;
+        }
 
-// Variables
-volatile unsigned long pulseCount = 0;
-unsigned long lastTime = 0;
-float flowRateLPM = 0;      // Liters per minute
-float flowRateGPH = 0;      // Gallons per hour
-float totalLiters = 0;      // Total fuel consumed
-float totalGallons = 0;
-bool deviceConnected = false;
+        .status.disconnected {
+            background: #c92a2a;
+        }
 
-// BLE Objects
-BLEServer* pServer = NULL;
-BLECharacteristic* pCharacteristic = NULL;
+        .status.connecting {
+            background: #f59f00;
+        }
 
-// Interrupt Service Routine for pulse counting
-void IRAM_ATTR pulseCounter() {
-  pulseCount++;
-}
+        .status.connected {
+            background: #2f9e44;
+        }
 
-// BLE Server Callbacks
-class MyServerCallbacks: public BLEServerCallbacks {
-    void onConnect(BLEServer* pServer) {
-      deviceConnected = true;
-      Serial.println("Device connected");
-    }
+        .controls {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+        }
 
-    void onDisconnect(BLEServer* pServer) {
-      deviceConnected = false;
-      Serial.println("Device disconnected");
-      // Restart advertising
-      BLEDevice::startAdvertising();
-    }
-};
+        button {
+            padding: 15px 30px;
+            font-size: 16px;
+            font-weight: bold;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s;
+            color: white;
+        }
 
-void setup() {
-  Serial.begin(115200);
-  Serial.println("ESP32 Fuel Flow Monitor Starting...");
-  
-  // Configure flow sensor pin
-  pinMode(FLOW_SENSOR_PIN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(FLOW_SENSOR_PIN), pulseCounter, FALLING);
-  
-  // Initialize BLE
-  BLEDevice::init("Fuel Flow Monitor");
-  
-  // Create BLE Server
-  pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
-  
-  // Create BLE Service
-  BLEService *pService = pServer->createService(SERVICE_UUID);
-  
-  // Create BLE Characteristic
-  pCharacteristic = pService->createCharacteristic(
-                      CHARACTERISTIC_UUID,
-                      BLECharacteristic::PROPERTY_READ |
-                      BLECharacteristic::PROPERTY_NOTIFY
-                    );
-  
-  pCharacteristic->addDescriptor(new BLE2902());
-  
-  // Start the service
-  pService->start();
-  
-  // Start advertising
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(true);
-  pAdvertising->setMinPreferred(0x06);
-  pAdvertising->setMinPreferred(0x12);
-  BLEDevice::startAdvertising();
-  
-  Serial.println("BLE device is now advertising. Waiting for connection...");
-  
-  lastTime = millis();
-}
+        button:active {
+            transform: scale(0.95);
+        }
 
-void loop() {
-  unsigned long currentTime = millis();
-  unsigned long elapsedTime = currentTime - lastTime;
-  
-  // Calculate flow rate every second
-  if (elapsedTime >= 1000) {
-    // Disable interrupts while reading pulse count
-    noInterrupts();
-    unsigned long pulses = pulseCount;
-    pulseCount = 0;
-    interrupts();
-    
-    // Calculate flow rate
-    // Formula: Flow (L/min) = Pulses / PULSES_PER_LITER / (elapsed_time_in_minutes)
-    float timeMinutes = elapsedTime / 60000.0;
-    flowRateLPM = (pulses / PULSES_PER_LITER) / timeMinutes;
-    flowRateGPH = flowRateLPM * 60.0 * LITERS_TO_GALLONS;  // Convert to GPH
-    
-    // Update total consumption
-    float litersThisPeriod = pulses / PULSES_PER_LITER;
-    totalLiters += litersThisPeriod;
-    totalGallons = totalLiters * LITERS_TO_GALLONS;
-    
-    // Debug output to Serial
-    Serial.print("Flow Rate: ");
-    Serial.print(flowRateGPH, 2);
-    Serial.print(" GPH | Total: ");
-    Serial.print(totalGallons, 2);
-    Serial.println(" gal");
-    
-    // Send data via BLE if connected
-    if (deviceConnected) {
-      // Format: "GPH:12.34,TOTAL:5.67"
-      String data = "GPH:" + String(flowRateGPH, 2) + 
-                    ",TOTAL:" + String(totalGallons, 2);
-      pCharacteristic->setValue(data.c_str());
-      pCharacteristic->notify();
-    }
-    
-    lastTime = currentTime;
-  }
-  
-  delay(10);  // Small delay to prevent overwhelming the processor
-}
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
 
-// Optional: Function to reset total consumption (call via BLE command if needed)
-void resetTotal() {
-  totalLiters = 0;
-  totalGallons = 0;
-  Serial.println("Total consumption reset");
-}
+        .btn-connect {
+            background: #2f9e44;
+        }
+
+        .btn-disconnect {
+            background: #c92a2a;
+        }
+
+        .btn-reset {
+            background: #f59f00;
+        }
+
+        .display-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .display-label {
+            font-size: 16px;
+            color: #94d2bd;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .display-value {
+            font-size: 64px;
+            font-weight: bold;
+            line-height: 1;
+            margin-bottom: 5px;
+        }
+
+        .flow-rate .display-value {
+            color: #51cf66;
+        }
+
+        .total .display-value {
+            color: #ffd43b;
+        }
+
+        .display-unit {
+            font-size: 24px;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .info {
+            background: rgba(74, 144, 226, 0.2);
+            border-left: 4px solid #4a90e2;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .footer {
+            margin-top: auto;
+            text-align: center;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.5);
+            padding-top: 20px;
+        }
+
+        @media (max-width: 600px) {
+            .display-value {
+                font-size: 48px;
+            }
+            
+            .controls {
+                flex-direction: column;
+            }
+            
+            button {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⛽ Fuel Flow Monitor</h1>
+        <div id="status" class="status disconnected">Disconnected</div>
+    </div>
+
+    <div class="controls">
+        <button id="connectBtn" class="btn-connect">Connect Bluetooth</button>
+        <button id="disconnectBtn" class="btn-disconnect" disabled>Disconnect</button>
+    </div>
+
+    <div class="display-card flow-rate">
+        <div class="display-label">Current Flow Rate</div>
+        <div class="display-value" id="flowRate">0.00</div>
+        <div class="display-unit">GPH</div>
+    </div>
+
+    <div class="display-card total">
+        <div class="display-label">Total Consumed</div>
+        <div class="display-value" id="totalFuel">0.00</div>
+        <div class="display-unit">Gallons</div>
+    </div>
+
+    <div class="controls">
+        <button id="resetBtn" class="btn-reset" disabled>Reset Total</button>
+    </div>
+
+    <div class="info">
+        <strong>📱 How to use:</strong><br>
+        1. Make sure your ESP32 is powered on<br>
+        2. Tap "Connect Bluetooth"<br>
+        3. Select "Fuel Flow Monitor" from the list<br>
+        4. Data will update automatically<br><br>
+        <strong>Note:</strong> Web Bluetooth requires iOS 16+ and Safari browser
+    </div>
+
+    <div class="footer">
+        Johnson 150 Fast Strike Fuel Monitor<br>
+        Web Bluetooth Edition
+    </div>
+
+    <script>
+        // Bluetooth UUIDs (must match ESP32 code)
+        const SERVICE_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+        const CHARACTERISTIC_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+
+        let bluetoothDevice = null;
+        let characteristic = null;
+
+        // UI Elements
+        const statusEl = document.getElementById('status');
+        const flowRateEl = document.getElementById('flowRate');
+        const totalFuelEl = document.getElementById('totalFuel');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
+        const resetBtn = document.getElementById('resetBtn');
+
+        // Update status display
+        function updateStatus(status, className) {
+            statusEl.textContent = status;
+            statusEl.className = 'status ' + className;
+        }
+
+        // Parse incoming data (format: "GPH:12.34,TOTAL:5.67")
+        function parseData(dataString) {
+            try {
+                const parts = dataString.split(',');
+                const gphPart = parts[0].split(':');
+                const totalPart = parts[1].split(':');
+                
+                const gph = parseFloat(gphPart[1]);
+                const total = parseFloat(totalPart[1]);
+                
+                flowRateEl.textContent = gph.toFixed(2);
+                totalFuelEl.textContent = total.toFixed(2);
+            } catch (error) {
+                console.error('Error parsing data:', error);
+            }
+        }
+
+        // Handle characteristic value changes
+        function handleCharacteristicValueChanged(event) {
+            const value = event.target.value;
+            const decoder = new TextDecoder('utf-8');
+            const dataString = decoder.decode(value);
+            parseData(dataString);
+        }
+
+        // Connect to Bluetooth device
+        async function connect() {
+            try {
+                updateStatus('Scanning...', 'connecting');
+                
+                // Request Bluetooth device
+                bluetoothDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{ name: 'Fuel Flow Monitor' }],
+                    optionalServices: [SERVICE_UUID]
+                });
+
+                updateStatus('Connecting...', 'connecting');
+
+                // Connect to GATT server
+                const server = await bluetoothDevice.gatt.connect();
+                
+                // Get service
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                
+                // Get characteristic
+                characteristic = await service.getCharacteristic(CHARACTERISTIC_UUID);
+                
+                // Start notifications
+                await characteristic.startNotifications();
+                
+                // Listen for value changes
+                characteristic.addEventListener('characteristicvaluechanged', 
+                    handleCharacteristicValueChanged);
+
+                // Update UI
+                updateStatus('✓ Connected', 'connected');
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                resetBtn.disabled = false;
+
+                // Handle disconnection
+                bluetoothDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+            } catch (error) {
+                console.error('Connection error:', error);
+                updateStatus('Connection failed: ' + error.message, 'disconnected');
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                resetBtn.disabled = true;
+            }
+        }
+
+        // Disconnect from device
+        async function disconnect() {
+            if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+                bluetoothDevice.gatt.disconnect();
+            }
+        }
+
+        // Handle disconnection
+        function onDisconnected() {
+            updateStatus('Disconnected', 'disconnected');
+            connectBtn.disabled = false;
+            disconnectBtn.disabled = true;
+            resetBtn.disabled = true;
+            characteristic = null;
+        }
+
+        // Reset total consumption
+        function resetTotal() {
+            if (confirm('Reset total fuel consumption to zero?')) {
+                totalFuelEl.textContent = '0.00';
+                // Optionally send reset command to ESP32
+                // (would need to implement on ESP32 side)
+            }
+        }
+
+        // Button event listeners
+        connectBtn.addEventListener('click', connect);
+        disconnectBtn.addEventListener('click', disconnect);
+        resetBtn.addEventListener('click', resetTotal);
+
+        // Check if Web Bluetooth is supported
+        if (!navigator.bluetooth) {
+            updateStatus('Web Bluetooth not supported', 'disconnected');
+            connectBtn.disabled = true;
+            document.querySelector('.info').innerHTML = 
+                '<strong>⚠️ Error:</strong><br>' +
+                'Web Bluetooth is not supported on this device/browser.<br>' +
+                'Make sure you are using Safari on iOS 16+ or Chrome on Android.';
+        }
+    </script>
+</body>
+</html>
